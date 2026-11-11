@@ -113,6 +113,11 @@ type ResolvedPipelineTask struct {
 
 	// EvaluatedCEL is used to store the results of evaluated CEL expression
 	EvaluatedCEL map[string]bool
+
+	// SkipFromSourceTag indicates this PipelineTask was listed in
+	// ActorWorkspaceSource.SkipTasks for a mid-DAG resumed PipelineRun seeded
+	// from an existing Snapshot Tag.
+	SkipFromSourceTag bool
 }
 
 // EvaluateCEL evaluate the CEL expressions, and store the evaluated results in EvaluatedCEL
@@ -460,6 +465,8 @@ func (t *ResolvedPipelineTask) skip(facts *PipelineRunFacts) TaskSkipStatus {
 	var skippingReason v1.SkippingReason
 
 	switch {
+	case t.SkipFromSourceTag:
+		skippingReason = v1.WhenExpressionsSkip
 	case facts.isFinalTask(t.PipelineTask.Name) || t.isScheduled() || t.isValidationFailed(facts.ValidationFailedTask):
 		skippingReason = v1.None
 	case facts.IsStopping():

@@ -423,8 +423,20 @@ func (c *Reconciler) reconcileActorTaskRun(
 		}
 		delete(tr.Annotations, ateactor.AnnotationCurrentStepID)
 
-		if suspErr := ateactor.SuspendActorSync(ctx, rt.Control(), atespace, actorName); suspErr != nil {
-			logger.Warnf("Failed to suspend failed Actor %s/%s: %v", atespace, actorName, suspErr)
+		failureTag := ateactor.FailureTagName(tr.Name)
+		if _, tagErr := ateactor.EnsureAtespaceTag(ctx, rt.Control(), atespace, failureTag, actorName); tagErr != nil {
+			logger.Warnf("Failed to checkpoint failure Snapshot Tag %s/%s from Actor %s: %v", atespace, failureTag, actorName, tagErr)
+			if suspErr := ateactor.SuspendActorSync(ctx, rt.Control(), atespace, actorName); suspErr != nil {
+				logger.Warnf("Failed to suspend failed Actor %s/%s: %v", atespace, actorName, suspErr)
+			}
+		} else {
+			tr.Annotations[ateactor.AnnotationFailureTag] = failureTag
+			tr.Annotations[ateactor.AnnotationFailedActor] = actorName
+			if tr.Status.Annotations == nil {
+				tr.Status.Annotations = make(map[string]string)
+			}
+			tr.Status.Annotations[ateactor.AnnotationFailureTag] = failureTag
+			tr.Status.Annotations[ateactor.AnnotationFailedActor] = actorName
 		}
 
 		tr.Status.CompletionTime = &finAt
@@ -469,7 +481,7 @@ func (c *Reconciler) reconcileActorTaskRun(
 	}
 
 	retain := tr.Annotations[ateactor.AnnotationRetainWorkspaceActor] == "true"
-	if actorMode == ateactor.ActorModeTrunk || retain {
+	if actorMode == ateactor.ActorModeTrunk || (actorMode == ateactor.ActorModeStandalone && retain) {
 		if err := ateactor.SuspendActorSync(ctx, rt.Control(), atespace, actorName); err != nil {
 			return err
 		}

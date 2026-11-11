@@ -835,6 +835,7 @@ func (c *Reconciler) reconcile(ctx context.Context, pr *v1.PipelineRun, getPipel
 	if pipelineTimeout := pr.PipelineTimeout(ctx); pipelineTimeout != 0 {
 		pipelineRunFacts.TimeoutsState.PipelineTimeout = &pipelineTimeout
 	}
+	applyActorSkipTasks(pr, pipelineRunFacts)
 
 	for i, rpt := range pipelineRunFacts.State {
 		// Task?
@@ -1099,6 +1100,12 @@ func (c *Reconciler) runNextSchedulableTask(ctx context.Context, pr *v1.Pipeline
 	}
 
 	resources.ApplyResultsToWorkspaceBindings(pipelineRunFacts.State.GetTaskRunsResults(), pr)
+
+	actorPlans, err := c.planNextActorTaskRuns(ctx, pr, pipelineRunFacts, nextRpts)
+	if err != nil {
+		return err
+	}
+	ctx = withActorTaskRunPlans(ctx, actorPlans)
 
 	for _, rpt := range nextRpts {
 		if rpt.IsFinalTask(pipelineRunFacts) {
@@ -1457,7 +1464,7 @@ func (c *Reconciler) createTaskRun(ctx context.Context, taskRunName string, para
 	}
 
 	if hasActorWorkspace(tr.Spec.Workspaces) {
-		annotateChildActorTaskRun(pr, tr)
+		annotateChildActorTaskRun(ctx, pr, tr)
 	} else {
 		aaBehavior, err := affinityassistant.GetAffinityAssistantBehavior(ctx)
 		if err != nil {

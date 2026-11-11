@@ -290,6 +290,49 @@ func SuspendActorSync(ctx context.Context, ctrl ateapi.ControlClient, atespace, 
 	return nil
 }
 
+// EnsureAtespaceTag idempotently checkpoints sourceActorName synchronously and
+// creates an atespace-scoped Snapshot Tag pointing to its latest durable snapshot.
+func EnsureAtespaceTag(
+	ctx context.Context,
+	ctrl ateapi.ControlClient,
+	atespace, tagName, sourceActorName string,
+) (*ateapi.Tag, error) {
+	existing, err := ctrl.GetTag(ctx, &ateapi.GetTagRequest{
+		Tag: &ateapi.ObjectRef{Atespace: atespace, Name: tagName},
+	})
+	if err == nil {
+		return existing, nil
+	}
+	if status.Code(err) != codes.NotFound {
+		return nil, fmt.Errorf("get tag %s/%s: %w", atespace, tagName, err)
+	}
+	if err := SuspendActorSync(ctx, ctrl, atespace, sourceActorName); err != nil {
+		return nil, err
+	}
+	created, err := ctrl.CreateTag(ctx, &ateapi.CreateTagRequest{
+		Tag: &ateapi.Tag{
+			Metadata: &ateapi.ResourceMetadata{
+				Atespace: atespace,
+				Name:     tagName,
+			},
+			Scope: ateapi.TagScope_TAG_SCOPE_ATESPACE,
+			SourceActor: &ateapi.ObjectRef{
+				Atespace: atespace,
+				Name:     sourceActorName,
+			},
+		},
+	})
+	if status.Code(err) == codes.AlreadyExists {
+		return ctrl.GetTag(ctx, &ateapi.GetTagRequest{
+			Tag: &ateapi.ObjectRef{Atespace: atespace, Name: tagName},
+		})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("create tag %s/%s from actor %s: %w", atespace, tagName, sourceActorName, err)
+	}
+	return created, nil
+}
+
 // DeleteActorIgnoreNotFound deletes an Actor if it still exists.
 func DeleteActorIgnoreNotFound(ctx context.Context, ctrl ateapi.ControlClient, atespace, actorName string) error {
 	if atespace == "" || actorName == "" {

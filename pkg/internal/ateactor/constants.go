@@ -33,6 +33,8 @@ const (
 	AnnotationWorkerPod            = "tekton.ate.dev/worker-pod"
 	AnnotationSourceTag            = "tekton.ate.dev/source-tag"
 	AnnotationMilestoneTag         = "tekton.ate.dev/milestone-tag"
+	AnnotationFailureTag           = "tekton.ate.dev/failure-tag"
+	AnnotationFailedActor          = "tekton.ate.dev/failed-actor"
 	AnnotationRetainWorkspaceActor = "tekton.ate.dev/retain-workspace-actor"
 	AnnotationCurrentStepID        = "tekton.ate.dev/current-step-id"
 	AnnotationSeededWorkspaces     = "tekton.ate.dev/seeded-workspaces"
@@ -83,6 +85,24 @@ func WorkspaceActorName(pipelineRunName string) string {
 // StandaloneActorName returns the deterministic Actor name for a standalone TaskRun.
 func StandaloneActorName(taskRunName string) string {
 	return SanitizeActorName("tr", taskRunName)
+}
+
+// BranchActorName returns the deterministic isolated Branch Actor name for a parallel TaskRun.
+func BranchActorName(taskRunName string) string {
+	return SanitizeActorName("br", taskRunName)
+}
+
+// MilestoneTagName returns the deterministic Snapshot Tag name for a PipelineRun fan-out wave.
+func MilestoneTagName(pipelineRunName, waveKey string) string {
+	if strings.TrimSpace(waveKey) == "" {
+		return SanitizeActorName("ms", pipelineRunName)
+	}
+	return SanitizeActorName("ms", pipelineRunName+"-"+waveKey)
+}
+
+// FailureTagName returns the deterministic Snapshot Tag name minted when a TaskRun step fails.
+func FailureTagName(taskRunName string) string {
+	return SanitizeActorName("failure", taskRunName)
 }
 
 // SanitizeActorName constructs a valid <=63-character RFC 1123 DNS label from prefix and rawName.

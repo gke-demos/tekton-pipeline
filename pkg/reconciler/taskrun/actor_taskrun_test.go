@@ -303,6 +303,18 @@ func TestActorTaskRun_StandaloneCleanupAndStepFailure(t *testing.T) {
 		if actor.GetStatus().GetState() != ateapi.ActorState_ACTOR_STATE_SUSPENDED {
 			t.Fatalf("expected failed Actor SUSPENDED, got %v", actor.GetStatus().GetState())
 		}
+		wantFailTag := ateactor.FailureTagName("actor-fail")
+		if tr.Annotations[ateactor.AnnotationFailureTag] != wantFailTag {
+			t.Fatalf("expected failure-tag annotation %q, got %q", wantFailTag, tr.Annotations[ateactor.AnnotationFailureTag])
+		}
+		if tr.Status.Annotations[ateactor.AnnotationFailureTag] != wantFailTag {
+			t.Fatalf("expected status failure-tag annotation %q, got %q", wantFailTag, tr.Status.Annotations[ateactor.AnnotationFailureTag])
+		}
+		if _, err := rt.Control().GetTag(ctx, &ateapi.GetTagRequest{
+			Tag: &ateapi.ObjectRef{Atespace: "ci", Name: wantFailTag},
+		}); err != nil {
+			t.Fatalf("expected failure Snapshot Tag %q to exist in Substrate: %v", wantFailTag, err)
+		}
 	})
 }
 

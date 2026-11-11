@@ -479,6 +479,503 @@ func TestActorPipelineRun_FailurePreservesSuspendedWorkspaceActor(t *testing.T) 
 	}
 }
 
+func TestActorPipelineRun_ParallelFanOutBranchesAndTrunkFanIn(t *testing.T) {
+	cloneTask := &v1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "clone-and-build", Namespace: "foo"},
+		Spec: v1.TaskSpec{
+			Workspaces: []v1.WorkspaceDeclaration{{Name: "source"}},
+			Steps: []v1.Step{{
+				Name:  "build",
+				Image: "golang:1.23",
+				Script: `#!/bin/sh
+set -eu
+printf "trunk-binary-v1" > $(workspaces.source.path)/built.txt
+printf "warm-gocache-v1" > $(workspaces.source.path)/gocache.txt
+`,
+			}},
+		},
+	}
+	unitTestTask := &v1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "unit-test", Namespace: "foo"},
+		Spec: v1.TaskSpec{
+			Workspaces: []v1.WorkspaceDeclaration{{Name: "source"}},
+			Results:    []v1.TaskResult{{Name: "test-summary"}},
+			Steps: []v1.Step{{
+				Name:  "test",
+				Image: "golang:1.23",
+				Script: `#!/bin/sh
+set -eu
+grep -q "trunk-binary-v1" $(workspaces.source.path)/built.txt
+printf "dirty-unit-test" > $(workspaces.source.path)/branch-dirty-unit.txt
+printf "PASS (4/4)" > $(results.test-summary.path)
+`,
+			}},
+		},
+	}
+	vulnScanTask := &v1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "vuln-scan", Namespace: "foo"},
+		Spec: v1.TaskSpec{
+			Workspaces: []v1.WorkspaceDeclaration{{Name: "source"}},
+			Results:    []v1.TaskResult{{Name: "secret-posture"}},
+			Steps: []v1.Step{{
+				Name:  "scan",
+				Image: "alpine:3.20",
+				Script: `#!/bin/sh
+set -eu
+grep -q "trunk-binary-v1" $(workspaces.source.path)/built.txt
+printf "dirty-vuln-scan" > $(workspaces.source.path)/branch-dirty-vuln.txt
+printf "ZERO_AMBIENT_SECRETS" > $(results.secret-posture.path)
+`,
+			}},
+		},
+	}
+	smokeTask := &v1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "integration-smoke", Namespace: "foo"},
+		Spec: v1.TaskSpec{
+			Workspaces: []v1.WorkspaceDeclaration{{Name: "source"}},
+			Results:    []v1.TaskResult{{Name: "smoke-status"}},
+			Steps: []v1.Step{{
+				Name:  "smoke",
+				Image: "alpine:3.20",
+				Script: `#!/bin/sh
+set -eu
+grep -q "trunk-binary-v1" $(workspaces.source.path)/built.txt
+printf "dirty-smoke" > $(workspaces.source.path)/branch-dirty-smoke.txt
+printf "200 OK" > $(results.smoke-status.path)
+`,
+			}},
+		},
+	}
+	publishTask := &v1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "package-and-publish", Namespace: "foo"},
+		Spec: v1.TaskSpec{
+			Workspaces: []v1.WorkspaceDeclaration{{Name: "source"}},
+			Params: []v1.ParamSpec{
+				{Name: "test-summary", Type: v1.ParamTypeString},
+				{Name: "secret-posture", Type: v1.ParamTypeString},
+				{Name: "smoke-status", Type: v1.ParamTypeString},
+			},
+			Results: []v1.TaskResult{{Name: "image-digest"}},
+			Steps: []v1.Step{{
+				Name:  "publish",
+				Image: "golang:1.23",
+				Script: `#!/bin/sh
+set -eu
+grep -q "trunk-binary-v1" $(workspaces.source.path)/built.txt
+if [ -e $(workspaces.source.path)/branch-dirty-unit.txt ] || [ -e $(workspaces.source.path)/branch-dirty-vuln.txt ] || [ -e $(workspaces.source.path)/branch-dirty-smoke.txt ]; then
+  echo "branch writes leaked into trunk workspace!" >&2
+  exit 1
+fi
+printf "sha256:published|$(params.test-summary)|$(params.secret-posture)|$(params.smoke-status)" > $(results.image-digest.path)
+`,
+			}},
+		},
+	}
+
+	p := &v1.Pipeline{
+		ObjectMeta: metav1.ObjectMeta{Name: "fanout-pipeline", Namespace: "foo"},
+		Spec: v1.PipelineSpec{
+			Workspaces: []v1.PipelineWorkspaceDeclaration{{Name: "shared"}},
+			Results: []v1.PipelineResult{{
+				Name:  "digest",
+				Value: *v1.NewStructuredValues("$(tasks.package-and-publish.results.image-digest)"),
+			}},
+			Tasks: []v1.PipelineTask{
+				{
+					Name:       "clone-and-build",
+					TaskRef:    &v1.TaskRef{Name: "clone-and-build"},
+					Workspaces: []v1.WorkspacePipelineTaskBinding{{Name: "source", Workspace: "shared"}},
+				},
+				{
+					Name:       "unit-test",
+					RunAfter:   []string{"clone-and-build"},
+					TaskRef:    &v1.TaskRef{Name: "unit-test"},
+					Workspaces: []v1.WorkspacePipelineTaskBinding{{Name: "source", Workspace: "shared"}},
+				},
+				{
+					Name:       "vuln-scan",
+					RunAfter:   []string{"clone-and-build"},
+					TaskRef:    &v1.TaskRef{Name: "vuln-scan"},
+					Workspaces: []v1.WorkspacePipelineTaskBinding{{Name: "source", Workspace: "shared"}},
+				},
+				{
+					Name:       "integration-smoke",
+					RunAfter:   []string{"clone-and-build"},
+					TaskRef:    &v1.TaskRef{Name: "integration-smoke"},
+					Workspaces: []v1.WorkspacePipelineTaskBinding{{Name: "source", Workspace: "shared"}},
+				},
+				{
+					Name:     "package-and-publish",
+					RunAfter: []string{"unit-test", "vuln-scan", "integration-smoke"},
+					TaskRef:  &v1.TaskRef{Name: "package-and-publish"},
+					Params: []v1.Param{
+						{Name: "test-summary", Value: *v1.NewStructuredValues("$(tasks.unit-test.results.test-summary)")},
+						{Name: "secret-posture", Value: *v1.NewStructuredValues("$(tasks.vuln-scan.results.secret-posture)")},
+						{Name: "smoke-status", Value: *v1.NewStructuredValues("$(tasks.integration-smoke.results.smoke-status)")},
+					},
+					Workspaces: []v1.WorkspacePipelineTaskBinding{{Name: "source", Workspace: "shared"}},
+				},
+			},
+		},
+	}
+
+	pr := &v1.PipelineRun{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "fanout-release",
+			Namespace: "foo",
+			UID:       "uid-fanout-pr",
+			Annotations: map[string]string{
+				ateactor.AnnotationRetainWorkspaceActor: "true",
+			},
+		},
+		Spec: v1.PipelineRunSpec{
+			PipelineRef: &v1.PipelineRef{Name: "fanout-pipeline"},
+			Workspaces: []v1.WorkspaceBinding{{
+				Name:  "shared",
+				Actor: &v1.ActorWorkspaceSource{Atespace: "ci"},
+			}},
+		},
+	}
+
+	d := test.Data{
+		Pipelines:    []*v1.Pipeline{p},
+		PipelineRuns: []*v1.PipelineRun{pr},
+		Tasks:        []*v1.Task{cloneTask, unitTestTask, vulnScanTask, smokeTask, publishTask},
+		ServiceAccounts: []*corev1.ServiceAccount{{
+			ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "foo"},
+		}},
+	}
+
+	rt := fakecontrol.NewTestRuntime(t, actorPRTestSupImg, map[string]string{
+		"golang:1.23": actorPRTestGolangImg,
+		"alpine:3.20": actorPRTestAlpineImg,
+	})
+	baseCtx, clients, informers, prCtl, trCtl, cancel := setupPipelineAndTaskRunControllers(t, d)
+	defer cancel()
+	ctx := ateactor.WithRuntime(baseCtx, rt)
+
+	for round := 0; round < 14; round++ {
+		if err := prCtl.Reconciler.Reconcile(ctx, "foo/fanout-release"); err != nil {
+			if ok, _ := controller.IsRequeueKey(err); !ok {
+				t.Fatalf("PipelineRun reconcile round %d error: %v", round, err)
+			}
+		}
+		syncPipelineAndTaskInformers(t, ctx, "foo", clients, informers)
+
+		trs, err := clients.Pipeline.TektonV1().TaskRuns("foo").List(ctx, metav1.ListOptions{})
+		if err != nil {
+			t.Fatalf("list TaskRuns: %v", err)
+		}
+		for _, childTR := range trs.Items {
+			if childTR.IsDone() {
+				continue
+			}
+			if err := trCtl.Reconciler.Reconcile(ctx, "foo/"+childTR.Name); err != nil {
+				if ok, _ := controller.IsRequeueKey(err); !ok {
+					t.Fatalf("TaskRun %s reconcile error: %v", childTR.Name, err)
+				}
+			}
+			syncPipelineAndTaskInformers(t, ctx, "foo", clients, informers)
+		}
+
+		cur, err := clients.Pipeline.TektonV1().PipelineRuns("foo").Get(ctx, "fanout-release", metav1.GetOptions{})
+		if err != nil {
+			t.Fatalf("get PipelineRun: %v", err)
+		}
+		if cur.IsDone() {
+			pr = cur
+			break
+		}
+	}
+
+	cond := pr.Status.GetCondition(apis.ConditionSucceeded)
+	if cond == nil || !cond.IsTrue() {
+		t.Fatalf("expected fanout PipelineRun Succeeded=True, got %+v", cond)
+	}
+
+	milestoneTag := pr.Annotations[ateactor.AnnotationMilestoneTag]
+	if milestoneTag == "" {
+		t.Fatalf("expected milestone-tag annotation on PipelineRun, got %v", pr.Annotations)
+	}
+	if _, err := rt.Control().GetTag(ctx, &ateapi.GetTagRequest{
+		Tag: &ateapi.ObjectRef{Atespace: "ci", Name: milestoneTag},
+	}); err != nil {
+		t.Fatalf("expected milestone tag %q in Substrate: %v", milestoneTag, err)
+	}
+
+	if len(pr.Status.Results) != 1 || pr.Status.Results[0].Value.StringVal != "sha256:published|PASS (4/4)|ZERO_AMBIENT_SECRETS|200 OK" {
+		t.Fatalf("unexpected PipelineRun results: %+v", pr.Status.Results)
+	}
+
+	trs, err := clients.Pipeline.TektonV1().TaskRuns("foo").List(ctx, metav1.ListOptions{})
+	if err != nil || len(trs.Items) != 5 {
+		t.Fatalf("expected 5 TaskRuns, got %d (err=%v)", len(trs.Items), err)
+	}
+	branchCount := 0
+	trunkCount := 0
+	for _, childTR := range trs.Items {
+		switch childTR.Labels[pipeline.PipelineTaskLabelKey] {
+		case "clone-and-build", "package-and-publish":
+			trunkCount++
+			if childTR.Annotations[ateactor.AnnotationActorMode] != ateactor.ActorModeTrunk {
+				t.Fatalf("expected trunk task %s to have actor-mode=trunk, got %q", childTR.Name, childTR.Annotations[ateactor.AnnotationActorMode])
+			}
+			if childTR.Annotations[ateactor.AnnotationActorName] != "ws-fanout-release" {
+				t.Fatalf("expected trunk task %s to use ws-fanout-release, got %q", childTR.Name, childTR.Annotations[ateactor.AnnotationActorName])
+			}
+		case "unit-test", "vuln-scan", "integration-smoke":
+			branchCount++
+			if childTR.Annotations[ateactor.AnnotationActorMode] != ateactor.ActorModeBranch {
+				t.Fatalf("expected parallel task %s to have actor-mode=branch, got %q", childTR.Name, childTR.Annotations[ateactor.AnnotationActorMode])
+			}
+			if childTR.Annotations[ateactor.AnnotationSourceTag] != milestoneTag {
+				t.Fatalf("expected parallel task %s source-tag=%q, got %q", childTR.Name, milestoneTag, childTR.Annotations[ateactor.AnnotationSourceTag])
+			}
+		}
+	}
+	if trunkCount != 2 || branchCount != 3 {
+		t.Fatalf("expected 2 trunk tasks and 3 branch tasks, got trunk=%d branch=%d", trunkCount, branchCount)
+	}
+	if len(rt.Server.DeletedActors()) != 3 {
+		t.Fatalf("expected 3 completed Branch Actors to be deleted, got %v", rt.Server.DeletedActors())
+	}
+}
+
+func TestActorPipelineRun_FailureTagAndMidDAGResumeWithSkipTasks(t *testing.T) {
+	cloneTask := &v1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "clone-and-build", Namespace: "foo"},
+		Spec: v1.TaskSpec{
+			Workspaces: []v1.WorkspaceDeclaration{{Name: "source"}},
+			Steps: []v1.Step{{
+				Name:  "build",
+				Image: "golang:1.23",
+				Script: `#!/bin/sh
+set -eu
+printf "buggy-discount-logic" > $(workspaces.source.path)/pricing.go
+printf "warm-gocache-ready" > $(workspaces.source.path)/gocache.state
+`,
+			}},
+		},
+	}
+	unitTestTask := &v1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "unit-test", Namespace: "foo"},
+		Spec: v1.TaskSpec{
+			Workspaces: []v1.WorkspaceDeclaration{{Name: "source"}},
+			Results:    []v1.TaskResult{{Name: "test-summary"}},
+			Steps: []v1.Step{{
+				Name:  "test",
+				Image: "golang:1.23",
+				Script: `#!/bin/sh
+set -eu
+grep -q "warm-gocache-ready" $(workspaces.source.path)/gocache.state
+if ! grep -q "fixed-discount-logic" $(workspaces.source.path)/pricing.go; then
+  echo "FAIL: pricing.go still contains buggy discount logic" >&2
+  exit 1
+fi
+printf "PASS (hot-patched)" > $(results.test-summary.path)
+`,
+			}},
+		},
+	}
+	publishTask := &v1.Task{
+		ObjectMeta: metav1.ObjectMeta{Name: "package-and-publish", Namespace: "foo"},
+		Spec: v1.TaskSpec{
+			Workspaces: []v1.WorkspaceDeclaration{{Name: "source"}},
+			Params:     []v1.ParamSpec{{Name: "test-summary", Type: v1.ParamTypeString}},
+			Results:    []v1.TaskResult{{Name: "image-digest"}},
+			Steps: []v1.Step{{
+				Name:  "publish",
+				Image: "alpine:3.20",
+				Script: `#!/bin/sh
+set -eu
+grep -q "fixed-discount-logic" $(workspaces.source.path)/pricing.go
+printf "sha256:resumed-ok|$(params.test-summary)" > $(results.image-digest.path)
+`,
+			}},
+		},
+	}
+
+	p := &v1.Pipeline{
+		ObjectMeta: metav1.ObjectMeta{Name: "rescue-pipeline", Namespace: "foo"},
+		Spec: v1.PipelineSpec{
+			Workspaces: []v1.PipelineWorkspaceDeclaration{{Name: "shared"}},
+			Results: []v1.PipelineResult{{
+				Name:  "digest",
+				Value: *v1.NewStructuredValues("$(tasks.package-and-publish.results.image-digest)"),
+			}},
+			Tasks: []v1.PipelineTask{
+				{
+					Name:       "clone-and-build",
+					TaskRef:    &v1.TaskRef{Name: "clone-and-build"},
+					Workspaces: []v1.WorkspacePipelineTaskBinding{{Name: "source", Workspace: "shared"}},
+				},
+				{
+					Name:       "unit-test",
+					RunAfter:   []string{"clone-and-build"},
+					TaskRef:    &v1.TaskRef{Name: "unit-test"},
+					Workspaces: []v1.WorkspacePipelineTaskBinding{{Name: "source", Workspace: "shared"}},
+				},
+				{
+					Name:     "package-and-publish",
+					RunAfter: []string{"unit-test"},
+					TaskRef:  &v1.TaskRef{Name: "package-and-publish"},
+					Params: []v1.Param{
+						{Name: "test-summary", Value: *v1.NewStructuredValues("$(tasks.unit-test.results.test-summary)")},
+					},
+					Workspaces: []v1.WorkspacePipelineTaskBinding{{Name: "source", Workspace: "shared"}},
+				},
+			},
+		},
+	}
+
+	buggyPR := &v1.PipelineRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "buggy-run", Namespace: "foo", UID: "uid-buggy-pr"},
+		Spec: v1.PipelineRunSpec{
+			PipelineRef: &v1.PipelineRef{Name: "rescue-pipeline"},
+			Workspaces: []v1.WorkspaceBinding{{
+				Name:  "shared",
+				Actor: &v1.ActorWorkspaceSource{Atespace: "ci"},
+			}},
+		},
+	}
+
+	d := test.Data{
+		Pipelines:    []*v1.Pipeline{p},
+		PipelineRuns: []*v1.PipelineRun{buggyPR},
+		Tasks:        []*v1.Task{cloneTask, unitTestTask, publishTask},
+		ServiceAccounts: []*corev1.ServiceAccount{{
+			ObjectMeta: metav1.ObjectMeta{Name: "default", Namespace: "foo"},
+		}},
+	}
+
+	rt := fakecontrol.NewTestRuntime(t, actorPRTestSupImg, map[string]string{
+		"golang:1.23": actorPRTestGolangImg,
+		"alpine:3.20": actorPRTestAlpineImg,
+	})
+	baseCtx, clients, informers, prCtl, trCtl, cancel := setupPipelineAndTaskRunControllers(t, d)
+	defer cancel()
+	ctx := ateactor.WithRuntime(baseCtx, rt)
+
+	for round := 0; round < 10; round++ {
+		_ = prCtl.Reconciler.Reconcile(ctx, "foo/buggy-run")
+		syncPipelineAndTaskInformers(t, ctx, "foo", clients, informers)
+		trs, _ := clients.Pipeline.TektonV1().TaskRuns("foo").List(ctx, metav1.ListOptions{})
+		for _, childTR := range trs.Items {
+			if !childTR.IsDone() {
+				_ = trCtl.Reconciler.Reconcile(ctx, "foo/"+childTR.Name)
+				syncPipelineAndTaskInformers(t, ctx, "foo", clients, informers)
+			}
+		}
+		cur, _ := clients.Pipeline.TektonV1().PipelineRuns("foo").Get(ctx, "buggy-run", metav1.GetOptions{})
+		if cur.IsDone() {
+			buggyPR = cur
+			break
+		}
+	}
+
+	if cond := buggyPR.Status.GetCondition(apis.ConditionSucceeded); cond == nil || !cond.IsFalse() {
+		t.Fatalf("expected buggy-run to fail in unit-test, got %+v", cond)
+	}
+
+	var failureTag string
+	var failedTmpl string
+	trs, _ := clients.Pipeline.TektonV1().TaskRuns("foo").List(ctx, metav1.ListOptions{})
+	for _, childTR := range trs.Items {
+		if childTR.Labels[pipeline.PipelineTaskLabelKey] == "unit-test" {
+			failureTag = childTR.Annotations[ateactor.AnnotationFailureTag]
+			failedTmpl = childTR.Annotations[ateactor.AnnotationActorTemplate]
+		}
+	}
+	if failureTag == "" {
+		t.Fatalf("expected unit-test TaskRun to record failure-tag annotation")
+	}
+
+	// Simulate Rescue Actor hot-patching the frozen failure Snapshot Tag and minting fixed-pricing-v1.
+	_, err := rt.Control().CreateActor(ctx, &ateapi.CreateActorRequest{
+		Actor: &ateapi.Actor{
+			Metadata:      &ateapi.ResourceMetadata{Atespace: "ci", Name: "rescue-unit-test"},
+			ActorTemplate: &ateapi.ObjectRef{Atespace: "ci", Name: failedTmpl},
+			SourceTag:     &ateapi.ObjectRef{Atespace: "ci", Name: failureTag},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateActor rescue-unit-test: %v", err)
+	}
+	if _, err := rt.Control().ResumeActor(ctx, &ateapi.ResumeActorRequest{
+		Actor: &ateapi.ObjectRef{Atespace: "ci", Name: "rescue-unit-test"},
+	}); err != nil {
+		t.Fatalf("ResumeActor rescue-unit-test: %v", err)
+	}
+	rescueSup := rt.SupervisorClient("ci", "rescue-unit-test")
+	if _, err := rescueSup.RescuePatch(ctx, ateactor.RescuePatchRequest{
+		Files: map[string]string{
+			"source/pricing.go": "fixed-discount-logic\n",
+		},
+	}); err != nil {
+		t.Fatalf("RescuePatch: %v", err)
+	}
+	if _, err := ateactor.EnsureAtespaceTag(ctx, rt.Control(), "ci", "fixed-pricing-v1", "rescue-unit-test"); err != nil {
+		t.Fatalf("EnsureAtespaceTag fixed-pricing-v1: %v", err)
+	}
+
+	// Launch mid-DAG resumed PipelineRun seeded from fixed-pricing-v1 and skipping clone-and-build!
+	resumedPR := &v1.PipelineRun{
+		ObjectMeta: metav1.ObjectMeta{Name: "resumed-run", Namespace: "foo", UID: "uid-resumed-pr"},
+		Spec: v1.PipelineRunSpec{
+			PipelineRef: &v1.PipelineRef{Name: "rescue-pipeline"},
+			Workspaces: []v1.WorkspaceBinding{{
+				Name: "shared",
+				Actor: &v1.ActorWorkspaceSource{
+					Atespace:  "ci",
+					SourceTag: "fixed-pricing-v1",
+					SkipTasks: []string{"clone-and-build"},
+				},
+			}},
+		},
+	}
+	if _, err := clients.Pipeline.TektonV1().PipelineRuns("foo").Create(ctx, resumedPR, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("create resumed-run: %v", err)
+	}
+	syncPipelineAndTaskInformers(t, ctx, "foo", clients, informers)
+
+	for round := 0; round < 10; round++ {
+		if err := prCtl.Reconciler.Reconcile(ctx, "foo/resumed-run"); err != nil {
+			if ok, _ := controller.IsRequeueKey(err); !ok {
+				t.Fatalf("resumed-run reconcile round %d error: %v", round, err)
+			}
+		}
+		syncPipelineAndTaskInformers(t, ctx, "foo", clients, informers)
+		allTRs, _ := clients.Pipeline.TektonV1().TaskRuns("foo").List(ctx, metav1.ListOptions{})
+		for _, childTR := range allTRs.Items {
+			if childTR.Labels[pipeline.PipelineRunLabelKey] != "resumed-run" || childTR.IsDone() {
+				continue
+			}
+			if err := trCtl.Reconciler.Reconcile(ctx, "foo/"+childTR.Name); err != nil {
+				if ok, _ := controller.IsRequeueKey(err); !ok {
+					t.Fatalf("resumed TaskRun %s reconcile error: %v", childTR.Name, err)
+				}
+			}
+			syncPipelineAndTaskInformers(t, ctx, "foo", clients, informers)
+		}
+		cur, _ := clients.Pipeline.TektonV1().PipelineRuns("foo").Get(ctx, "resumed-run", metav1.GetOptions{})
+		if cur.IsDone() {
+			resumedPR = cur
+			break
+		}
+	}
+
+	cond := resumedPR.Status.GetCondition(apis.ConditionSucceeded)
+	if cond == nil || !cond.IsTrue() {
+		t.Fatalf("expected resumed-run Succeeded=True, got %+v", cond)
+	}
+	if len(resumedPR.Status.SkippedTasks) != 1 || resumedPR.Status.SkippedTasks[0].Name != "clone-and-build" {
+		t.Fatalf("expected clone-and-build in SkippedTasks, got %+v", resumedPR.Status.SkippedTasks)
+	}
+	if len(resumedPR.Status.Results) != 1 || resumedPR.Status.Results[0].Value.StringVal != "sha256:resumed-ok|PASS (hot-patched)" {
+		t.Fatalf("unexpected resumed-run results: %+v", resumedPR.Status.Results)
+	}
+}
+
 func TestActorCRD_OpenAPISchemasIncludeActorFields(t *testing.T) {
 	crdFiles := []string{
 		"300-pipelinerun.yaml",
