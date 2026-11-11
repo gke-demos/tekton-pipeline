@@ -47,6 +47,16 @@ rules:
   - apiGroups: ["resolution.tekton.dev"]
     resources: ["resolutionrequests", "resolutionrequests/status"]
     verbs: ["get", "list", "create", "update", "delete", "patch", "watch"]
+  # Agent Substrate (ate.dev) control-plane and CONNECT-TLS router credentials
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["clustertrustbundles"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["certificates.k8s.io"]
+    resources: ["podcertificaterequests"]
+    verbs: ["get", "list", "watch", "create", "delete"]
 ---
 kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
