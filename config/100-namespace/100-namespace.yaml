@@ -20,3 +20,4 @@ metadata:
     app.kubernetes.io/instance: default
     app.kubernetes.io/part-of: tekton-pipelines
     pod-security.kubernetes.io/enforce: restricted
+    ate.dev/api-access: "true"
