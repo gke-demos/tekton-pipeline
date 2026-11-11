@@ -973,6 +973,7 @@ func TestPipelineRunSpec_Invalidate(t *testing.T) {
 		wantErr: &apis.FieldError{
 			Message: "expected exactly one, got neither",
 			Paths: []string{
+				"workspaces[0].actor",
 				"workspaces[0].configmap",
 				"workspaces[0].emptydir",
 				"workspaces[0].persistentvolumeclaim",

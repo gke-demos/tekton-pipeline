@@ -86,6 +86,32 @@ type WorkspaceBinding struct {
 	// CSI (Container Storage Interface) represents ephemeral storage that is handled by certain external CSI drivers.
 	// +optional
 	CSI *corev1.CSIVolumeSource `json:"csi,omitempty"`
+	// Actor represents an Agent Substrate Actor durable workspace binding.
+	// +optional
+	Actor *ActorWorkspaceSource `json:"actor,omitempty"`
+}
+
+// ActorWorkspaceSource configures an Agent Substrate Actor durable workspace.
+type ActorWorkspaceSource struct {
+	// Atespace is the Agent Substrate Atespace where the Workspace Actor and
+	// any Branch Actors or Snapshot Tags are created.
+	Atespace string `json:"atespace"`
+	// SourceTag optionally seeds the Workspace Actor from an immutable Substrate Snapshot Tag.
+	// +optional
+	SourceTag string `json:"sourceTag,omitempty"`
+	// SkipTasks optionally lists PipelineTask names already satisfied by SourceTag during mid-DAG resume.
+	// +optional
+	SkipTasks []string `json:"skipTasks,omitempty"`
+	// WorkerSelector optionally constrains WorkerPool placement by label equality.
+	// +optional
+	WorkerSelector map[string]string `json:"workerSelector,omitempty"`
+	// EgressSecret optionally names a Kubernetes Secret (<secret> or <secret>/<key>, defaulting key to "token")
+	// injected as Authorization: Bearer <token> via per-Actor EgressPolicy (ate-secret://).
+	// +optional
+	EgressSecret string `json:"egressSecret,omitempty"`
+	// EgressHosts optionally specifies RFC 1123 DNS hostname patterns matched by the per-Actor EgressPolicy.
+	// +optional
+	EgressHosts []string `json:"egressHosts,omitempty"`
 }
 
 // WorkspacePipelineDeclaration creates a named slot in a Pipeline that a PipelineRun

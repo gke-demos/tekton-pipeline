@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -43,6 +44,7 @@ import (
 	beta1listers "github.com/tektoncd/pipeline/pkg/client/listers/pipeline/v1beta1"
 	ctrl "github.com/tektoncd/pipeline/pkg/controller"
 	"github.com/tektoncd/pipeline/pkg/internal/affinityassistant"
+	"github.com/tektoncd/pipeline/pkg/internal/ateactor"
 	resolutionutil "github.com/tektoncd/pipeline/pkg/internal/resolution"
 	"github.com/tektoncd/pipeline/pkg/names"
 	"github.com/tektoncd/pipeline/pkg/pipelinerunmetrics"
@@ -178,6 +180,10 @@ type Reconciler struct {
 	pvcHandler               volumeclaim.PvcHandler
 	resolutionRequester      resolution.Requester
 	tracerProvider           trace.TracerProvider
+
+	ActorRuntime   ateactor.Runtime
+	actorRuntimeMu sync.Mutex
+	actorRuntime   ateactor.Runtime
 }
 
 var (
@@ -707,6 +713,7 @@ func (c *Reconciler) reconcile(ctx context.Context, pr *v1.PipelineRun, getPipel
 	}
 
 	resources.ApplyParametersToWorkspaceBindings(pr)
+	ensurePipelineRunActorMetadata(pr)
 	// Make a deep copy of the Pipeline and its Tasks before value substitution.
 	// This is used to find referenced pipeline-level params at each PipelineTask when validate param enum subset requirement
 	originalPipeline := pipelineSpec.DeepCopy()
@@ -1449,12 +1456,16 @@ func (c *Reconciler) createTaskRun(ctx context.Context, taskRunName string, para
 		return nil, err
 	}
 
-	aaBehavior, err := affinityassistant.GetAffinityAssistantBehavior(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if aaAnnotationVal := getAffinityAssistantAnnotationVal(aaBehavior, pipelinePVCWorkspaceName, pr.Name); aaAnnotationVal != "" {
-		tr.Annotations[workspace.AnnotationAffinityAssistantName] = aaAnnotationVal
+	if hasActorWorkspace(tr.Spec.Workspaces) {
+		annotateChildActorTaskRun(pr, tr)
+	} else {
+		aaBehavior, err := affinityassistant.GetAffinityAssistantBehavior(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if aaAnnotationVal := getAffinityAssistantAnnotationVal(aaBehavior, pipelinePVCWorkspaceName, pr.Name); aaAnnotationVal != "" {
+			tr.Annotations[workspace.AnnotationAffinityAssistantName] = aaAnnotationVal
+		}
 	}
 
 	logger.Infof("Creating a new TaskRun object %s for pipeline task %s", taskRunName, rpt.PipelineTask.Name)
@@ -1618,12 +1629,14 @@ func (c *Reconciler) createCustomRun(ctx context.Context, runName string, params
 
 	// Set the affinity assistant annotation in case the custom task creates TaskRuns or Pods
 	// that can take advantage of it.
-	aaBehavior, err := affinityassistant.GetAffinityAssistantBehavior(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if aaAnnotationVal := getAffinityAssistantAnnotationVal(aaBehavior, pipelinePVCWorkspaceName, pr.Name); aaAnnotationVal != "" {
-		r.Annotations[workspace.AnnotationAffinityAssistantName] = aaAnnotationVal
+	if !hasActorWorkspace(pr.Spec.Workspaces) || hasPVCOrClaimTemplateWorkspace(pr.Spec.Workspaces) {
+		aaBehavior, err := affinityassistant.GetAffinityAssistantBehavior(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if aaAnnotationVal := getAffinityAssistantAnnotationVal(aaBehavior, pipelinePVCWorkspaceName, pr.Name); aaAnnotationVal != "" {
+			r.Annotations[workspace.AnnotationAffinityAssistantName] = aaAnnotationVal
+		}
 	}
 
 	logger.Infof("Creating a new CustomRun object %s", runName)

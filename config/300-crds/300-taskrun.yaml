@@ -1077,6 +1077,36 @@ spec:
                     required:
                       - name
                     properties:
+                      actor:
+                        description: Actor represents an Agent Substrate Actor durable workspace binding.
+                        type: object
+                        required:
+                          - atespace
+                        properties:
+                          atespace:
+                            description: Atespace is the Agent Substrate Atespace where the Workspace Actor is created.
+                            type: string
+                          egressHosts:
+                            description: EgressHosts optionally specifies RFC 1123 DNS hostname patterns matched by the per-Actor EgressPolicy.
+                            type: array
+                            items:
+                              type: string
+                          egressSecret:
+                            description: EgressSecret optionally names a Kubernetes Secret injected as Authorization Bearer via per-Actor EgressPolicy.
+                            type: string
+                          skipTasks:
+                            description: SkipTasks optionally lists PipelineTask names already satisfied by SourceTag during mid-DAG resume.
+                            type: array
+                            items:
+                              type: string
+                          sourceTag:
+                            description: SourceTag optionally seeds the Workspace Actor from an immutable Substrate Snapshot Tag.
+                            type: string
+                          workerSelector:
+                            description: WorkerSelector optionally constrains WorkerPool placement by label equality.
+                            type: object
+                            additionalProperties:
+                              type: string
                       configMap:
                         description: ConfigMap
                         type: object
@@ -3218,6 +3248,36 @@ spec:
                     required:
                       - name
                     properties:
+                      actor:
+                        description: Actor represents an Agent Substrate Actor durable workspace binding.
+                        type: object
+                        required:
+                          - atespace
+                        properties:
+                          atespace:
+                            description: Atespace is the Agent Substrate Atespace where the Workspace Actor is created.
+                            type: string
+                          egressHosts:
+                            description: EgressHosts optionally specifies RFC 1123 DNS hostname patterns matched by the per-Actor EgressPolicy.
+                            type: array
+                            items:
+                              type: string
+                          egressSecret:
+                            description: EgressSecret optionally names a Kubernetes Secret injected as Authorization Bearer via per-Actor EgressPolicy.
+                            type: string
+                          skipTasks:
+                            description: SkipTasks optionally lists PipelineTask names already satisfied by SourceTag during mid-DAG resume.
+                            type: array
+                            items:
+                              type: string
+                          sourceTag:
+                            description: SourceTag optionally seeds the Workspace Actor from an immutable Substrate Snapshot Tag.
+                            type: string
+                          workerSelector:
+                            description: WorkerSelector optionally constrains WorkerPool placement by label equality.
+                            type: object
+                            additionalProperties:
+                              type: string
                       configMap:
                         description: ConfigMap represents a configMap that should populate this workspace.
                         type: object

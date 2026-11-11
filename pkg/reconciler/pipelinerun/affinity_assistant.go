@@ -95,6 +95,9 @@ func (c *Reconciler) createOrUpdateAffinityAssistantsAndPVCs(ctx context.Context
 			claimTemplateToWorkspace[claimTemplate] = w
 		}
 	}
+	if hasActorWorkspace(pr.Spec.Workspaces) && len(claimTemplates) == 0 && len(claimNames) == 0 {
+		return nil
+	}
 	switch aaBehavior {
 	case aa.AffinityAssistantPerWorkspace:
 		for claimName, workspaceName := range claimNameToWorkspaceName {
@@ -212,12 +215,20 @@ func (c *Reconciler) createOrUpdateAffinityAssistant(ctx context.Context, affini
 
 // cleanupAffinityAssistantsAndPVCs deletes Affinity Assistant StatefulSets and PVCs created from VolumeClaimTemplates
 func (c *Reconciler) cleanupAffinityAssistantsAndPVCs(ctx context.Context, pr *v1.PipelineRun) error {
-	aaBehavior, err := aa.GetAffinityAssistantBehavior(ctx)
-	if err != nil {
-		return err
+	var errs []error
+	if actorErr := c.cleanupActorWorkspace(ctx, pr); actorErr != nil {
+		errs = append(errs, actorErr)
+	}
+	if hasActorWorkspace(pr.Spec.Workspaces) && !hasPVCOrClaimTemplateWorkspace(pr.Spec.Workspaces) {
+		return errorutils.NewAggregate(errs)
 	}
 
-	var errs []error
+	aaBehavior, err := aa.GetAffinityAssistantBehavior(ctx)
+	if err != nil {
+		errs = append(errs, err)
+		return errorutils.NewAggregate(errs)
+	}
+
 	switch aaBehavior {
 	case aa.AffinityAssistantPerWorkspace:
 		// Check if auto-cleanup annotation is enabled
@@ -256,7 +267,7 @@ func (c *Reconciler) cleanupAffinityAssistantsAndPVCs(ctx context.Context, pr *v
 			}
 		}
 	case aa.AffinityAssistantDisabled:
-		return nil
+		return errorutils.NewAggregate(errs)
 	}
 
 	return errorutils.NewAggregate(errs)

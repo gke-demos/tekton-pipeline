@@ -39,6 +39,7 @@ import (
 	alphalisters "github.com/tektoncd/pipeline/pkg/client/listers/pipeline/v1alpha1"
 	ctrl "github.com/tektoncd/pipeline/pkg/controller"
 	"github.com/tektoncd/pipeline/pkg/internal/affinityassistant"
+	"github.com/tektoncd/pipeline/pkg/internal/ateactor"
 	"github.com/tektoncd/pipeline/pkg/internal/computeresources"
 	"github.com/tektoncd/pipeline/pkg/internal/defaultresourcerequirements"
 	resolutionutil "github.com/tektoncd/pipeline/pkg/internal/resolution"
@@ -108,6 +109,10 @@ type Reconciler struct {
 	// including ObserveDeletion, remove records; elapsed time alone does not.
 	podEventStateMu sync.Mutex
 	podEventStates  map[types.NamespacedName]podEventState
+
+	ActorRuntime   ateactor.Runtime
+	actorRuntimeMu sync.Mutex
+	actorRuntime   ateactor.Runtime
 }
 
 const (
@@ -480,7 +485,9 @@ func (c *Reconciler) ReconcileKind(ctx context.Context, tr *v1.TaskRun) (reconci
 	// Reconcile this copy of the task run and then write back any status
 	// updates regardless of whether the reconciliation errored out.
 	if err = c.reconcile(ctx, tr, rtr); err != nil {
-		logger.Errorf("Reconcile: %v", err.Error())
+		if ok, _ := controller.IsRequeueKey(err); !ok {
+			logger.Errorf("Reconcile: %v", err.Error())
+		}
 		if errors.Is(err, sidecarlogresults.ErrSizeExceeded) {
 			message := fmt.Sprintf("%s TaskRun \"%q\" failed: %s", pipelineErrors.UserErrorLabel, tr.Name, err.Error())
 			err := c.failTaskRun(ctx, tr, v1.TaskRunReasonResultLargerThanAllowedLimit, message)
@@ -689,7 +696,7 @@ func (c *Reconciler) stopSidecars(ctx context.Context, tr *v1.TaskRun) error {
 	defer span.End()
 	logger := logging.FromContext(ctx)
 	// do not continue without knowing the associated pod
-	if tr.Status.PodName == "" {
+	if hasActorWorkspace(tr.Spec.Workspaces) || tr.Status.PodName == "" {
 		return nil
 	}
 
@@ -959,52 +966,55 @@ func (c *Reconciler) reconcile(ctx context.Context, tr *v1.TaskRun, rtr *resourc
 
 	// Get the TaskRun's Pod if it should have one. Otherwise, create the Pod.
 	var pod *corev1.Pod
+	isActorTaskRun := hasActorWorkspace(tr.Spec.Workspaces)
 
-	if tr.Status.PodName != "" {
-		pod, err = c.podLister.Pods(tr.Namespace).Get(tr.Status.PodName)
-		if k8serrors.IsNotFound(err) {
-			// Keep going, this will result in the Pod being created below.
-		} else if err != nil {
-			// This is considered a transient error, so we return error, do not update
-			// the task run condition, and return an error which will cause this key to
-			// be requeued for reconcile.
-			logger.Errorf("Error getting pod %q: %v", tr.Status.PodName, err)
-			return err
-		}
-	} else {
-		// List pods that have a label with this TaskRun name.  Do not include other labels from the
-		// TaskRun in this selector.  The user could change them during the lifetime of the TaskRun so the
-		// current labels may not be set on a previously created Pod.
-		labelSelector := labels.Set{pipeline.TaskRunLabelKey: tr.Name}
-		pos, err := c.podLister.Pods(tr.Namespace).List(labelSelector.AsSelector())
-		if err != nil {
-			logger.Errorf("Error listing pods: %v", err)
-			return err
-		}
-		for index := range pos {
-			po := pos[index]
-			if metav1.IsControlledBy(po, tr) && !podconvert.DidTaskRunFail(po) && !podconvert.IsPodArchived(po, &tr.Status) {
-				pod = po
+	if !isActorTaskRun {
+		if tr.Status.PodName != "" {
+			pod, err = c.podLister.Pods(tr.Namespace).Get(tr.Status.PodName)
+			if k8serrors.IsNotFound(err) {
+				// Keep going, this will result in the Pod being created below.
+			} else if err != nil {
+				// This is considered a transient error, so we return error, do not update
+				// the task run condition, and return an error which will cause this key to
+				// be requeued for reconcile.
+				logger.Errorf("Error getting pod %q: %v", tr.Status.PodName, err)
+				return err
 			}
-		}
-	}
-
-	// Please note that this block is required to run before `applyParamsContextsResultsAndWorkspaces` is called the first time,
-	// and that `applyParamsContextsResultsAndWorkspaces` _must_ be called on every reconcile.
-	if pod == nil && tr.HasVolumeClaimTemplate() {
-		for _, ws := range tr.Spec.Workspaces {
-			if err := c.pvcHandler.CreatePVCFromVolumeClaimTemplate(ctx, ws, *kmeta.NewControllerRef(tr), tr.Namespace); err != nil {
-				logger.Errorf("Failed to create PVC for TaskRun %s: %v", tr.Name, err)
-				tr.Status.MarkResourceFailed(volumeclaim.ReasonCouldntCreateWorkspacePVC,
-					fmt.Errorf("failed to create PVC for TaskRun %s workspaces correctly: %w",
-						fmt.Sprintf("%s/%s", tr.Namespace, tr.Name), err))
-				return controller.NewPermanentError(err)
+		} else {
+			// List pods that have a label with this TaskRun name.  Do not include other labels from the
+			// TaskRun in this selector.  The user could change them during the lifetime of the TaskRun so the
+			// current labels may not be set on a previously created Pod.
+			labelSelector := labels.Set{pipeline.TaskRunLabelKey: tr.Name}
+			pos, err := c.podLister.Pods(tr.Namespace).List(labelSelector.AsSelector())
+			if err != nil {
+				logger.Errorf("Error listing pods: %v", err)
+				return err
+			}
+			for index := range pos {
+				po := pos[index]
+				if metav1.IsControlledBy(po, tr) && !podconvert.DidTaskRunFail(po) && !podconvert.IsPodArchived(po, &tr.Status) {
+					pod = po
+				}
 			}
 		}
 
-		taskRunWorkspaces := applyVolumeClaimTemplates(tr.Spec.Workspaces, *kmeta.NewControllerRef(tr))
-		// This is used by createPod below. Changes to the Spec are not updated.
-		tr.Spec.Workspaces = taskRunWorkspaces
+		// Please note that this block is required to run before `applyParamsContextsResultsAndWorkspaces` is called the first time,
+		// and that `applyParamsContextsResultsAndWorkspaces` _must_ be called on every reconcile.
+		if pod == nil && tr.HasVolumeClaimTemplate() {
+			for _, ws := range tr.Spec.Workspaces {
+				if err := c.pvcHandler.CreatePVCFromVolumeClaimTemplate(ctx, ws, *kmeta.NewControllerRef(tr), tr.Namespace); err != nil {
+					logger.Errorf("Failed to create PVC for TaskRun %s: %v", tr.Name, err)
+					tr.Status.MarkResourceFailed(volumeclaim.ReasonCouldntCreateWorkspacePVC,
+						fmt.Errorf("failed to create PVC for TaskRun %s workspaces correctly: %w",
+							fmt.Sprintf("%s/%s", tr.Namespace, tr.Name), err))
+					return controller.NewPermanentError(err)
+				}
+			}
+
+			taskRunWorkspaces := applyVolumeClaimTemplates(tr.Spec.Workspaces, *kmeta.NewControllerRef(tr))
+			// This is used by createPod below. Changes to the Spec are not updated.
+			tr.Spec.Workspaces = taskRunWorkspaces
+		}
 	}
 
 	resources.ApplyParametersToWorkspaceBindings(rtr.TaskSpec, tr)
@@ -1026,6 +1036,10 @@ func (c *Reconciler) reconcile(ctx context.Context, tr *v1.TaskRun, rtr *resourc
 
 	if len(tr.Status.TaskSpec.Steps) > 0 {
 		logger.Debugf("set taskspec for %s/%s - script: %s", tr.Namespace, tr.Name, tr.Status.TaskSpec.Steps[0].Script)
+	}
+
+	if isActorTaskRun {
+		return c.reconcileActorTaskRun(ctx, ts, tr, rtr)
 	}
 
 	if pod == nil {
@@ -1132,6 +1146,7 @@ func (c *Reconciler) updateTaskRunWithDefaultWorkspaces(ctx context.Context, tr 
 					EmptyDir:              defaultWS.EmptyDir,
 					ConfigMap:             defaultWS.ConfigMap,
 					Secret:                defaultWS.Secret,
+					Actor:                 defaultWS.Actor.DeepCopy(),
 				}
 			}
 		}
@@ -1235,6 +1250,11 @@ func (c *Reconciler) failTaskRun(ctx context.Context, tr *v1.TaskRun, reason v1.
 	completionTime := metav1.Time{Time: c.Clock.Now()}
 	// update tr completed time
 	tr.Status.CompletionTime = &completionTime
+
+	if hasActorWorkspace(tr.Spec.Workspaces) {
+		c.failActorTaskRun(ctx, tr, reason)
+		return nil
+	}
 
 	if tr.Status.PodName == "" {
 		logger.Warnf("task run %q has no pod running yet", tr.Name)

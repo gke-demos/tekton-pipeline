@@ -20,6 +20,7 @@ import (
 	"context"
 	"testing"
 
+	v1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	"github.com/tektoncd/pipeline/pkg/apis/pipeline/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -109,6 +110,15 @@ func TestWorkspaceBindingValidateValid(t *testing.T) {
 				Driver: "my-csi",
 			},
 		},
+	}, {
+		name: "Valid actor",
+		binding: &v1beta1.WorkspaceBinding{
+			Name: "source",
+			Actor: &v1beta1.ActorWorkspaceSource{
+				Atespace:     "ci",
+				EgressSecret: "git-creds",
+			},
+		},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -176,6 +186,21 @@ func TestWorkspaceBindingValidateInvalid(t *testing.T) {
 				Driver: "",
 			},
 		},
+	}, {
+		name: "Provide actor without atespace",
+		binding: &v1beta1.WorkspaceBinding{
+			Name:  "source",
+			Actor: &v1beta1.ActorWorkspaceSource{},
+		},
+	}, {
+		name: "Provide both actor and emptyDir",
+		binding: &v1beta1.WorkspaceBinding{
+			Name:     "source",
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+			Actor: &v1beta1.ActorWorkspaceSource{
+				Atespace: "ci",
+			},
+		},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -186,5 +211,44 @@ func TestWorkspaceBindingValidateInvalid(t *testing.T) {
 				t.Errorf("expected error for invalid binding but didn't get any!")
 			}
 		})
+	}
+}
+
+func TestActorWorkspaceConversionAndDeepCopy(t *testing.T) {
+	ctx := t.Context()
+	srcV1 := v1.WorkspaceBinding{
+		Name:    "source",
+		SubPath: "repo",
+		Actor: &v1.ActorWorkspaceSource{
+			Atespace:       "ci",
+			SourceTag:      "ms-tag",
+			SkipTasks:      []string{"clone-and-build"},
+			WorkerSelector: map[string]string{"pool": "gvisor"},
+			EgressSecret:   "git-creds/token",
+			EgressHosts:    []string{"git-oci.ci.svc.cluster.local"},
+		},
+	}
+
+	var bBeta v1beta1.WorkspaceBinding
+	bBeta.ConvertFrom(ctx, srcV1)
+	if bBeta.Actor == nil || bBeta.Actor.Atespace != "ci" || bBeta.Actor.EgressSecret != "git-creds/token" {
+		t.Fatalf("unexpected v1beta1 actor binding after ConvertFrom: %+v", bBeta.Actor)
+	}
+
+	copied := bBeta.DeepCopy()
+	copied.Actor.SkipTasks[0] = "mutated"
+	copied.Actor.WorkerSelector["pool"] = "mutated"
+	copied.Actor.EgressHosts[0] = "mutated"
+	if bBeta.Actor.SkipTasks[0] != "clone-and-build" || bBeta.Actor.WorkerSelector["pool"] != "gvisor" || bBeta.Actor.EgressHosts[0] != "git-oci.ci.svc.cluster.local" {
+		t.Fatalf("DeepCopy shared mutable fields with original: %+v", bBeta.Actor)
+	}
+
+	crBeta := &v1beta1.CustomRun{
+		Spec: v1beta1.CustomRunSpec{
+			Workspaces: []v1beta1.WorkspaceBinding{bBeta},
+		},
+	}
+	if err := crBeta.Spec.Workspaces[0].Validate(ctx); err != nil {
+		t.Fatalf("unexpected validation error on converted v1beta1 binding: %v", err)
 	}
 }
