@@ -19,7 +19,7 @@ const (
 
 	DefaultSystemNamespace = "ate-system"
 	DefaultClientSA        = "ate-client"
-	DefaultRouterClientSA  = "atenet-client"
+	DefaultRouterClientSA  = "atenet-router"
 	DefaultAPIServiceName  = "api"
 	DefaultRouterService   = "atenet-router"
 	RouterConnectTLSPort   = 8444
