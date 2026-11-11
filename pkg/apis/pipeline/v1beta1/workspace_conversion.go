@@ -18,6 +18,8 @@ package v1beta1
 
 import (
 	"context"
+	"maps"
+	"slices"
 
 	v1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 )
@@ -82,6 +84,18 @@ func (w WorkspaceBinding) convertTo(ctx context.Context, sink *v1.WorkspaceBindi
 	sink.Secret = w.Secret
 	sink.Projected = w.Projected
 	sink.CSI = w.CSI
+	if w.Actor != nil {
+		sink.Actor = &v1.ActorWorkspaceSource{
+			Atespace:       w.Actor.Atespace,
+			SourceTag:      w.Actor.SourceTag,
+			SkipTasks:      slices.Clone(w.Actor.SkipTasks),
+			WorkerSelector: maps.Clone(w.Actor.WorkerSelector),
+			EgressSecret:   w.Actor.EgressSecret,
+			EgressHosts:    slices.Clone(w.Actor.EgressHosts),
+		}
+	} else {
+		sink.Actor = nil
+	}
 }
 
 // ConvertFrom converts v1beta1 Param from v1 Param
@@ -95,4 +109,16 @@ func (w *WorkspaceBinding) ConvertFrom(ctx context.Context, source v1.WorkspaceB
 	w.Secret = source.Secret
 	w.Projected = source.Projected
 	w.CSI = source.CSI
+	if source.Actor != nil {
+		w.Actor = &ActorWorkspaceSource{
+			Atespace:       source.Actor.Atespace,
+			SourceTag:      source.Actor.SourceTag,
+			SkipTasks:      slices.Clone(source.Actor.SkipTasks),
+			WorkerSelector: maps.Clone(source.Actor.WorkerSelector),
+			EgressSecret:   source.Actor.EgressSecret,
+			EgressHosts:    slices.Clone(source.Actor.EgressHosts),
+		}
+	} else {
+		w.Actor = nil
+	}
 }

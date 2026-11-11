@@ -1583,3 +1583,33 @@ func TestReplaceWorkspaceBindingsVars(t *testing.T) {
 		})
 	}
 }
+
+func TestActorWorkspaceCreateVolumesAndReplacement(t *testing.T) {
+	wbs := []v1.WorkspaceBinding{{
+		Name: "source",
+		Actor: &v1.ActorWorkspaceSource{
+			Atespace:     "$(params.atespace)",
+			SourceTag:    "$(params.tag)",
+			EgressSecret: "$(params.secret)",
+			EgressHosts:  []string{"$(params.host)"},
+		},
+	}}
+	replaced := workspace.ReplaceWorkspaceBindingsVars(wbs, map[string]string{
+		"params.atespace": "ci",
+		"params.tag":      "fixed-1",
+		"params.secret":   "git-creds/token",
+		"params.host":     "git-oci.ci.svc.cluster.local",
+	})
+	if replaced[0].Actor.Atespace != "ci" || replaced[0].Actor.SourceTag != "fixed-1" || replaced[0].Actor.EgressSecret != "git-creds/token" || replaced[0].Actor.EgressHosts[0] != "git-oci.ci.svc.cluster.local" {
+		t.Fatalf("unexpected replaced actor workspace: %+v", replaced[0].Actor)
+	}
+
+	vols := workspace.CreateVolumes(replaced)
+	vol, ok := vols["source"]
+	if !ok {
+		t.Fatalf("expected CreateVolumes to produce placeholder volume entry for actor workspace, got %+v", vols)
+	}
+	if vol.EmptyDir == nil {
+		t.Fatalf("expected EmptyDir placeholder volume source for actor workspace, got %+v", vol.VolumeSource)
+	}
+}

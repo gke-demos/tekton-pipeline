@@ -93,6 +93,8 @@ func CreateVolumes(wb []v1.WorkspaceBinding) map[string]corev1.Volume {
 		case w.CSI != nil:
 			csi := *w.CSI
 			v.setVolumeSource(w.Name, name, corev1.VolumeSource{CSI: &csi})
+		case w.Actor != nil:
+			v.setVolumeSource(w.Name, name, corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}})
 		}
 	}
 	return v
@@ -348,6 +350,16 @@ func replaceWorkspaceBindingVars(wb *v1.WorkspaceBinding, replacements map[strin
 	}
 	if wb.CSI != nil {
 		wb.CSI = applyCSIVolumeSource(wb.CSI, replacements)
+	}
+	if wb.Actor != nil {
+		actorCopy := wb.Actor.DeepCopy()
+		actorCopy.Atespace = substitution.ApplyReplacements(actorCopy.Atespace, replacements)
+		actorCopy.SourceTag = substitution.ApplyReplacements(actorCopy.SourceTag, replacements)
+		actorCopy.EgressSecret = substitution.ApplyReplacements(actorCopy.EgressSecret, replacements)
+		for i := range actorCopy.EgressHosts {
+			actorCopy.EgressHosts[i] = substitution.ApplyReplacements(actorCopy.EgressHosts[i], replacements)
+		}
+		wb.Actor = actorCopy
 	}
 	return wb
 }

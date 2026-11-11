@@ -110,6 +110,19 @@ func TestWorkspaceBindingValidateValid(t *testing.T) {
 				Driver: "my-csi",
 			},
 		},
+	}, {
+		name: "Valid actor",
+		binding: &v1.WorkspaceBinding{
+			Name: "source",
+			Actor: &v1.ActorWorkspaceSource{
+				Atespace:       "ci",
+				SourceTag:      "fixed-test",
+				SkipTasks:      []string{"clone-and-build"},
+				WorkerSelector: map[string]string{"pool": "gvisor"},
+				EgressSecret:   "git-creds/token",
+				EgressHosts:    []string{"git-oci.ci.svc.cluster.local"},
+			},
+		},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -179,6 +192,21 @@ func TestWorkspaceBindingValidateInvalid(t *testing.T) {
 			},
 		},
 		wc: cfgtesting.EnableBetaAPIFields,
+	}, {
+		name: "Provide actor without atespace",
+		binding: &v1.WorkspaceBinding{
+			Name:  "source",
+			Actor: &v1.ActorWorkspaceSource{},
+		},
+	}, {
+		name: "Provide both actor and emptyDir",
+		binding: &v1.WorkspaceBinding{
+			Name:     "source",
+			EmptyDir: &corev1.EmptyDirVolumeSource{},
+			Actor: &v1.ActorWorkspaceSource{
+				Atespace: "ci",
+			},
+		},
 	}} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()

@@ -18,6 +18,7 @@ package v1
 
 import (
 	"context"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/equality"
 	"knative.dev/pkg/apis"
@@ -31,6 +32,7 @@ var allVolumeSourceFields = []string{
 	"emptydir",
 	"configmap",
 	"secret",
+	"actor",
 }
 
 // Validate looks at the Volume provided in wb and makes sure that it is valid.
@@ -80,6 +82,12 @@ func (b *WorkspaceBinding) Validate(ctx context.Context) (errs *apis.FieldError)
 		}
 	}
 
+	if b.Actor != nil {
+		if strings.TrimSpace(b.Actor.Atespace) == "" {
+			return apis.ErrMissingField("actor.atespace")
+		}
+	}
+
 	return nil
 }
 
@@ -106,6 +114,9 @@ func (b *WorkspaceBinding) numSources() int {
 		n++
 	}
 	if b.CSI != nil {
+		n++
+	}
+	if b.Actor != nil {
 		n++
 	}
 	return n
