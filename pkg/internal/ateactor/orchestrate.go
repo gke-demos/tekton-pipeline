@@ -297,6 +297,9 @@ func EnsureAtespaceTag(
 	ctrl ateapi.ControlClient,
 	atespace, tagName, sourceActorName string,
 ) (*ateapi.Tag, error) {
+	if err := SuspendActorSync(ctx, ctrl, atespace, sourceActorName); err != nil {
+		return nil, err
+	}
 	existing, err := ctrl.GetTag(ctx, &ateapi.GetTagRequest{
 		Tag: &ateapi.ObjectRef{Atespace: atespace, Name: tagName},
 	})
@@ -305,9 +308,6 @@ func EnsureAtespaceTag(
 	}
 	if status.Code(err) != codes.NotFound {
 		return nil, fmt.Errorf("get tag %s/%s: %w", atespace, tagName, err)
-	}
-	if err := SuspendActorSync(ctx, ctrl, atespace, sourceActorName); err != nil {
-		return nil, err
 	}
 	created, err := ctrl.CreateTag(ctx, &ateapi.CreateTagRequest{
 		Tag: &ateapi.Tag{
