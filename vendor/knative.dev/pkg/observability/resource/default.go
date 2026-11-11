@@ -55,15 +55,14 @@ func Default(serviceName string) *resource.Resource {
 
 	// Ignore the error because it complains about semconv
 	// schema version differences
-	resource, err := resource.Merge(
+	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
+		resource.NewSchemaless(
 			attrs...,
 		),
 	)
 	if err != nil {
-		panic(err)
+		return resource.NewSchemaless(attrs...)
 	}
-	return resource
+	return res
 }
