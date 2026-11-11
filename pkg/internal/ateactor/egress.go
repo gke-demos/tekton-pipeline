@@ -50,6 +50,10 @@ func DefaultEgressHostPatterns(namespace string) []string {
 		"git-oci." + ns + ".svc",
 		"*." + ns + ".svc.cluster.local",
 		"*." + ns + ".svc",
+		"git-oci.demo-repo.svc.cluster.local",
+		"git-oci.demo-repo.svc",
+		"*.demo-repo.svc.cluster.local",
+		"*.demo-repo.svc",
 		"*.svc.cluster.local",
 		"*.svc",
 	}
